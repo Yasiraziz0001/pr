@@ -14,15 +14,15 @@ let users = {};
 let userCounter = 1;
 
 app.use(express.json());
-app.use(express.static(path.join(__dirname, "public")));
+app.use(express.static(path.join(__dirname, "view")));
 
 // --- Serve HTML pages ---
 app.get("/", (req, res) => {
-  res.sendFile(path.join(__dirname, "public", "index.html"));
+  res.sendFile(path.join(__dirname, "view", "index.html"));
 });
 
 app.get("/dashboard", (req, res) => {
-  res.sendFile(path.join(__dirname, "public", "dashboard.html"));
+  res.sendFile(path.join(__dirname, "view", "dashboard.html"));
 });
 
 // --- REST APIs ---
@@ -82,3 +82,4 @@ const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   console.log(`🚀 Server running at http://localhost:${PORT}`);
 });
+

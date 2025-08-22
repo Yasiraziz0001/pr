@@ -1,0 +1,107 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <link rel="stylesheet" href="./style.css" />
+  <title>Viewer</title>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h2>Viewer</h2>
+      <div class="row"><span class="badge" id="badge">—</span></div>
+    </div>
+
+    <div class="card">
+      <video id="remote" playsinline autoplay controls></video>
+      <div class="row" style="margin-top:10px;">
+        <button id="mute" class="btn">Mute Mic</button>
+        <button id="unmute" class="btn">Unmute Mic</button>
+        <button id="stopCam" class="btn">Stop Camera</button>
+        <button id="startCam" class="btn">Start Camera</button>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:12px;">
+      <div class="badge">Publisher Info</div>
+      <div class="kv small" id="info"></div>
+    </div>
+
+    <div class="card" style="margin-top:12px;">
+      <div class="badge">Live Location</div>
+      <div id="loc" class="small">—</div>
+    </div>
+  </div>
+
+  <script type="module">
+    import { qs, el, fmtTs, iceServers } from './utils.js';
+    window.BACKEND = window.BACKEND || 'https://webrtc-capture.onrender.com';
+
+    function wsUrlFromBackend(){
+      const u = new URL(window.BACKEND);
+      const protocol = u.protocol === 'https:' ? 'wss:' : 'ws:';
+      return `${protocol}//${u.host}/ws`;
+    }
+
+    const params = new URLSearchParams(location.search);
+    const userId = params.get('userId');
+    qs('#badge').textContent = userId ? `User: ${userId}` : 'No userId';
+
+    async function loadInfo(){
+      if (!userId) return;
+      const r = await fetch(`${window.BACKEND}/api/user/${encodeURIComponent(userId)}`);
+      if (!r.ok) return;
+      const j = await r.json();
+      if (!j.user) return;
+      const u = j.user;
+      const box = qs('#info'); box.innerHTML = '';
+      box.append(el('div',{},'User ID'), el('div',{}, String(u.id)));
+      box.append(el('div',{},'IP'), el('div',{}, u.ip || '—'));
+      box.append(el('div',{},'Status'), el('div',{}, u.status || '—'));
+      box.append(el('div',{},'Has Video'), el('div',{}, u.hasVideo ? 'yes' : 'no'));
+      box.append(el('div',{},'Has Audio'), el('div',{}, u.hasAudio ? 'yes' : 'no'));
+      box.append(el('div',{},'Last Seen'), el('div',{}, fmtTs(u.lastSeen || u.createdAt)));
+    }
+
+    // Viewer WebRTC flow
+    let pc, ws;
+    async function connect(){
+      if (!userId) { alert('Missing userId'); return; }
+      const WS = wsUrlFromBackend() + `?role=viewer&userId=${encodeURIComponent(userId)}`;
+      pc = new RTCPeerConnection({ iceServers: iceServers() });
+      pc.ontrack = (ev) => { qs('#remote').srcObject = ev.streams[0]; };
+      pc.onicecandidate = (e) => { if (e.candidate) ws.send(JSON.stringify({ type:'ice', role:'viewer', to:'publisher', candidate: e.candidate })); };
+
+      ws = new WebSocket(WS);
+      ws.onopen = async () => {
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        ws.send(JSON.stringify({ type:'viewer-offer', sdp: offer.sdp }));
+      };
+      ws.onmessage = async (ev) => {
+        const msg = JSON.parse(ev.data);
+        if (msg.type === 'publisher-answer' && msg.sdp) {
+          await pc.setRemoteDescription({ type:'answer', sdp: msg.sdp });
+        } else if (msg.type === 'ice' && msg.candidate) {
+          try { await pc.addIceCandidate(msg.candidate); } catch(e){ console.warn('ICE add err', e); }
+        } else if (msg.type === 'location') {
+          qs('#loc').textContent = `Lat ${msg.lat.toFixed(6)}, Lon ${msg.lon.toFixed(6)} (±${Math.round(msg.acc)} m) @ ${new Date(msg.ts).toLocaleString()}`;
+        } else if (msg.type === 'status' && msg.user) {
+          loadInfo();
+        }
+      };
+
+      // control buttons
+      qs('#mute').onclick    = () => ws.send(JSON.stringify({ type:'command', action:'muteMic' }));
+      qs('#unmute').onclick  = () => ws.send(JSON.stringify({ type:'command', action:'unmuteMic' }));
+      qs('#stopCam').onclick = () => ws.send(JSON.stringify({ type:'command', action:'stopCam' }));
+      qs('#startCam').onclick= () => ws.send(JSON.stringify({ type:'command', action:'startCam' }));
+    }
+
+    loadInfo();
+    connect();
+    setInterval(loadInfo, 5000);
+  </script>
+</body>
+</html>

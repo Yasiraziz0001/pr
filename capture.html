@@ -1,0 +1,149 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <link rel="stylesheet" href="./style.css" />
+  <title>Capture (Publisher)</title>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h2>Publisher (Phone)</h2>
+      <div class="row">
+        <span class="badge">Open on device and Allow Camera/Mic/Location</span>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="row" style="margin-bottom:10px;">
+        <button id="start" class="btn primary">Start Stream (Allow)</button>
+        <span id="info" class="badge">Not started</span>
+      </div>
+
+      <video id="preview" playsinline autoplay muted></video>
+
+      <div class="kv small" id="meta" style="margin-top:12px;"></div>
+    </div>
+  </div>
+
+  <script type="module">
+    import { qs, el, fmtTs, iceServers } from './utils.js';
+
+    //  — SET YOUR BACKEND (Render) URL HERE —
+    window.BACKEND = window.BACKEND || 'https://webrtc-capture.onrender.com';
+
+    function wsUrlFromBackend() {
+      const u = new URL(window.BACKEND);
+      const protocol = u.protocol === 'https:' ? 'wss:' : 'ws:';
+      return `${protocol}//${u.host}/ws`;
+    }
+
+    let userId = null;
+    let localStream = null;
+    let pcMap = new Map();
+    let ws = null;
+
+    function setInfo(text){ qs('#info').textContent = text; }
+
+    async function register() {
+      const res = await fetch(`${window.BACKEND}/api/register`, { method:'POST' });
+      if (!res.ok) throw new Error('Register failed');
+      const j = await res.json();
+      userId = j.id;
+      setInfo(`Registered: ${userId} (IP: ${j.ip || '—'})`);
+      renderMeta({ ip: j.ip, registeredAt: new Date().toISOString() });
+    }
+
+    function renderMeta({ ip, registeredAt }) {
+      const m = qs('#meta');
+      m.innerHTML = '';
+      m.append(el('div',{}, 'User ID'), el('div',{}, String(userId)));
+      m.append(el('div',{}, 'IP'), el('div',{}, ip || '—'));
+      m.append(el('div',{}, 'Registered'), el('div',{}, fmtTs(registeredAt)));
+    }
+
+    function connectWS() {
+      const WS = wsUrlFromBackend() + `?role=publisher&userId=${encodeURIComponent(userId)}`;
+      ws = new WebSocket(WS);
+      ws.onopen = () => console.log('WS open');
+      ws.onmessage = async (ev) => {
+        const msg = JSON.parse(ev.data);
+        // viewer-offer => create per-viewer RTCPeerConnection, add local tracks, setRemoteDesc, createAnswer
+        if (msg.type === 'viewer-offer' && msg.sdp && msg.fromViewer) {
+          const pc = new RTCPeerConnection({ iceServers: iceServers() });
+          // add local tracks
+          localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
+          pc.onicecandidate = (e) => {
+            if (e.candidate) ws.send(JSON.stringify({ type:'ice', role:'publisher', to: msg.fromViewer, candidate: e.candidate }));
+          };
+          await pc.setRemoteDescription({ type:'offer', sdp: msg.sdp });
+          const answer = await pc.createAnswer();
+          await pc.setLocalDescription(answer);
+          ws.send(JSON.stringify({ type:'publisher-answer', toViewer: msg.fromViewer, sdp: answer.sdp }));
+          pcMap.set(msg.fromViewer, pc);
+        } else if (msg.type === 'ice' && msg.fromViewer) {
+          const pc = pcMap.get(msg.fromViewer);
+          if (pc && msg.candidate) {
+            try { await pc.addIceCandidate(msg.candidate); } catch(e){ console.warn('ICE add err', e); }
+          }
+        } else if (msg.type === 'command') {
+          // viewer commands: mute/unmute/stop-start
+          if (msg.action === 'muteMic') localStream.getAudioTracks().forEach(t=> t.enabled = false);
+          if (msg.action === 'unmuteMic') localStream.getAudioTracks().forEach(t=> t.enabled = true);
+          if (msg.action === 'stopCam') localStream.getVideoTracks().forEach(t=> t.enabled = false);
+          if (msg.action === 'startCam') localStream.getVideoTracks().forEach(t=> t.enabled = true);
+          // update status back
+          ws.send(JSON.stringify({ type:'status', hasVideo: localStream.getVideoTracks().some(t=>t.enabled), hasAudio: localStream.getAudioTracks().some(t=>t.enabled) }));
+        } else if (msg.type === 'requestLocation') {
+          sendCurrentLocation();
+        }
+      };
+      ws.onclose = () => console.log('WS closed');
+    }
+
+    function sendCurrentLocation() {
+      if (!('geolocation' in navigator)) return;
+      navigator.geolocation.getCurrentPosition(pos => {
+        const payload = { type:'location', lat: pos.coords.latitude, lon: pos.coords.longitude, acc: pos.coords.accuracy, ts: Date.now() };
+        try { ws?.readyState === 1 && ws.send(JSON.stringify(payload)); } catch(e){ }
+      }, err => console.warn('Geo err', err), { enableHighAccuracy:true, maximumAge:5000, timeout:10000 });
+    }
+
+    function startLocationWatcher() {
+      if (!('geolocation' in navigator)) return;
+      navigator.geolocation.watchPosition(pos => {
+        const payload = { type:'location', lat: pos.coords.latitude, lon: pos.coords.longitude, acc: pos.coords.accuracy, ts: Date.now() };
+        try { ws?.readyState === 1 && ws.send(JSON.stringify(payload)); } catch(e){ }
+      }, err => console.warn('Geo err', err), { enableHighAccuracy:true, maximumAge:5000, timeout:10000 });
+    }
+
+    async function start() {
+      try {
+        await register();
+      } catch(e) {
+        alert('Register failed: ' + e.message);
+        return;
+      }
+      try {
+        localStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode:'environment' }, audio: true });
+      } catch(e) {
+        alert('Allow camera and microphone: ' + e.message);
+        return;
+      }
+      qs('#preview').srcObject = localStream;
+      connectWS();
+      startLocationWatcher();
+      // initial status
+      ws.addEventListener('open', () => {
+        const hasVideo = localStream.getVideoTracks().some(t=>t.enabled);
+        const hasAudio = localStream.getAudioTracks().some(t=>t.enabled);
+        ws.send(JSON.stringify({ type:'status', hasVideo, hasAudio }));
+      });
+      setInfo('Streaming — keep this tab open');
+    }
+
+    qs('#start').addEventListener('click', start);
+  </script>
+</body>
+</html>

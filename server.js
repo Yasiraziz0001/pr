@@ -9,11 +9,13 @@ const app = express();
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
 
-// Memory me users
+// In-memory users
 let users = {};
 let userCounter = 1;
 
 app.use(express.json());
+
+// Serve static files (css/js/html)
 app.use(express.static(path.join(__dirname, "view")));
 
 // --- Serve HTML pages ---
@@ -47,6 +49,7 @@ wss.on("connection", (ws) => {
   ws.on("message", (msg) => {
     try {
       const data = JSON.parse(msg);
+
       if (data.type === "register") {
         const u = users[data.userId];
         if (u) {
@@ -54,7 +57,8 @@ wss.on("connection", (ws) => {
           ws.userId = data.userId;
           console.log(`✅ User registered: ${data.userId}`);
         }
-      } else if (data.type === "signal") {
+      } 
+      else if (data.type === "signal") {
         const target = users[data.target];
         if (target && target.ws) {
           target.ws.send(JSON.stringify({
@@ -64,6 +68,7 @@ wss.on("connection", (ws) => {
           }));
         }
       }
+
     } catch (e) {
       console.error("WS message error:", e);
     }
@@ -72,7 +77,11 @@ wss.on("connection", (ws) => {
   ws.on("close", () => {
     if (ws.userId && users[ws.userId]) {
       console.log(`❌ User disconnected: ${ws.userId}`);
+      // Option 1: only mark ws = null
       users[ws.userId].ws = null;
+
+      // Option 2 (better): delete user
+      // delete users[ws.userId];
     }
   });
 });
@@ -82,4 +91,3 @@ const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   console.log(`🚀 Server running at http://localhost:${PORT}`);
 });
-
